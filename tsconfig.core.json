@@ -1,0 +1,9 @@
+{
+  "//": "Game rules must not touch the browser, so the simulator and tests can run them headless.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src/core", "src/content"]
+}
