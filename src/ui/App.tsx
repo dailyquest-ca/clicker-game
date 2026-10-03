@@ -1,136 +1,188 @@
 import { useState } from 'preact/hooks';
-import { BOSSES } from '../content/bosses';
-import { itemDef } from '../content/items';
-import { SLOTS, ageYears, canRebirth, computeStats, memoryRate, predictFight, ripeness } from '../core/formulas';
-import type { GameState } from '../core/types';
+import { STORY } from '../content/story';
+import { dismissCard } from '../core/actions';
+import { age, assignedPips, idlePips, incomeRate, season, shopCost, toMichaelmas, totalPips, yearIndex } from '../core/formulas';
+import { currentGoals } from '../core/goals';
 import type { OfflineSummary } from '../core/save';
-import { Btn } from './bits';
+import type { GameState, TabId } from '../core/types';
+import { Bar, Btn, Pips } from './bits';
 import { num, time } from './format';
-import { useGame } from './store';
-import { AdventureTab } from './tabs/Adventure';
-import { ChoresTab } from './tabs/Chores';
-import { FightTab } from './tabs/Fight';
-import { InventoryTab } from './tabs/Inventory';
+import { Heir } from './Heir';
+import { act, useGame } from './store';
+import { BelongingsTab } from './tabs/Belongings';
+import { FairTab } from './tabs/Fair';
+import { FamilyTab } from './tabs/Family';
+import { ManorTab } from './tabs/Manor';
 import { MarketTab } from './tabs/Market';
-import { RebirthTab } from './tabs/Rebirth';
+import { ShopTab } from './tabs/Shop';
 import { StatsTab } from './tabs/Stats';
+import { WorkTab } from './tabs/Work';
 
-type TabId = 'chores' | 'fight' | 'adventure' | 'inventory' | 'market' | 'rebirth' | 'stats';
+const TAB_ORDER: TabId[] = ['work', 'market', 'shop', 'manor', 'belongings', 'family', 'fair', 'stats'];
+const TAB_LABELS: Record<TabId, string> = {
+  work: 'Work',
+  market: 'Market',
+  shop: 'Shop',
+  manor: 'Steward & Debt',
+  belongings: 'Belongings',
+  family: 'Family',
+  fair: 'Fair',
+  stats: 'Stats',
+};
 
-interface TabInfo {
-  id: TabId;
-  label: string;
-  visible: (g: GameState) => boolean;
-  /** A little "!" when something is worth a look. */
-  alert?: (g: GameState) => boolean;
+/** A little "!" on a tab when something there wants attention. */
+function tabAlert(g: GameState, tab: TabId): boolean {
+  switch (tab) {
+    case 'work':
+      return idlePips(g) > 0;
+    case 'shop':
+      return g.savingFor !== null && g.pennies >= shopCost(g, g.savingFor);
+    case 'family':
+      return g.lore >= 2;
+    case 'fair':
+      return g.fairContest !== null && !g.fairEntered;
+    default:
+      return false;
+  }
 }
 
-const TABS: TabInfo[] = [
-  { id: 'chores', label: 'Chores', visible: () => true, alert: (g) => g.stamina.idle >= 1 && g.perks.habit === 0 },
-  {
-    id: 'fight',
-    label: 'Fight',
-    visible: () => true,
-    alert: (g) => {
-      const boss = BOSSES[g.bossesBeaten];
-      return !g.fight && !!boss && predictFight(computeStats(g), boss).win;
-    },
-  },
-  { id: 'adventure', label: 'Adventure', visible: (g) => g.unlocked.adventure, alert: (g) => g.unlocked.adventure && g.adventure.zone === null },
-  {
-    id: 'inventory',
-    label: 'Inventory',
-    visible: (g) => g.unlocked.adventure || g.inventory.length > 0 || SLOTS.some((s) => g.equipped[s]),
-    // Something to wear in an empty slot, or duplicates waiting to be merged.
-    alert: (g) =>
-      g.inventory.some((i) => !g.equipped[itemDef(i.id).slot]) ||
-      g.inventory.some((i) => g.inventory.filter((j) => j.id === i.id).length > 1 || SLOTS.some((s) => g.equipped[s]?.id === i.id)),
-  },
-  { id: 'market', label: 'Market', visible: (g) => g.unlocked.market },
-  {
-    id: 'rebirth',
-    label: 'Rebirth',
-    visible: (g) => g.unlocked.rebirth,
-    alert: (g) => canRebirth(g) && ripeness(g.lifeTime) >= 1 && g.life.peakRate > 0 && memoryRate(g) < g.life.peakRate * 0.9,
-  },
-  { id: 'stats', label: 'Stats', visible: () => true },
-];
-
-export function App(props: { offline: OfflineSummary | null }) {
+export function App(props: { offline: OfflineSummary | null; notice: string | null }) {
   const g = useGame();
-  const [tab, setTab] = useState<TabId>('chores');
+  const [tab, setTab] = useState<TabId>('work');
   const [offline, setOffline] = useState(props.offline);
-  const stats = computeStats(g);
-  const visible = TABS.filter((t) => t.visible(g));
-  const active = visible.some((t) => t.id === tab) ? tab : 'chores';
+  const [notice, setNotice] = useState(props.notice);
+  const [retiring, setRetiring] = useState(false);
+  const visible = TAB_ORDER.filter((t) => g.tabs.includes(t));
+  const active = visible.includes(tab) ? tab : 'work';
+  const card = STORY.find((c) => c.id === g.cardQueue[0]);
+  const goals = currentGoals(g);
+  const showMoney = g.tabs.includes('market');
 
   return (
     <div class="app">
       <header class="top">
         <div class="title">
-          <strong>Hob the Serf</strong> <span class="muted">· Life {g.rebirths + 1} · age {ageYears(g.lifeTime)} · {time(g.lifeTime)}</span>
+          <strong>{g.name}</strong>{' '}
+          <span class="muted">{g.dead ? ` · died aged ${age(g)}` : ` · age ${age(g)} · Year ${yearIndex(g) + 1}, ${season(g)}`}</span>
         </div>
         <div class="resources">
-          <span title="Gold">
-            <b>{num(g.gold)}</b> gold
-          </span>
-          {g.records.memoriesEarned > 0 || g.unlocked.rebirth ? (
-            <span title="Memories">
-              <b>{num(g.memories)}</b> memories
+          {g.tabs.includes('manor') && !g.dead && (
+            <span title="Gerald collects the tithe at Michaelmas">
+              Michaelmas in <b>{time(toMichaelmas(g))}</b>
             </span>
-          ) : null}
-          <span class="power">
-            Power <b>{num(stats.power)}</b>
+          )}
+          <span title="Stamina pips busy / total">
+            <Pips used={assignedPips(g)} total={totalPips(g)} />
           </span>
-          <span class="guard">
-            Guard <b>{num(stats.guard)}</b>
-          </span>
+          {showMoney && (
+            <span data-testid="pennies">
+              <b>{num(g.pennies)}d</b> <span class="muted small">+{num(incomeRate(g))}/s</span>
+            </span>
+          )}
         </div>
       </header>
 
       <nav class="tabs">
         {visible.map((t) => (
-          <button class={`tab ${active === t.id ? 'on' : ''}`} onClick={() => setTab(t.id)} data-testid={`tab-${t.id}`}>
-            {t.label}
-            {t.alert?.(g) && <span class="dot">!</span>}
+          <button class={`tab ${active === t ? 'on' : ''}`} onClick={() => setTab(t)} data-testid={`tab-${t}`}>
+            {TAB_LABELS[t]}
+            {tabAlert(g, t) && <span class="dot">!</span>}
           </button>
         ))}
       </nav>
 
       <main class="main">
-        {active === 'chores' && <ChoresTab />}
-        {active === 'fight' && <FightTab />}
-        {active === 'adventure' && <AdventureTab />}
-        {active === 'inventory' && <InventoryTab />}
+        {active === 'work' && <WorkTab />}
         {active === 'market' && <MarketTab />}
-        {active === 'rebirth' && <RebirthTab />}
+        {active === 'shop' && <ShopTab />}
+        {active === 'manor' && <ManorTab />}
+        {active === 'belongings' && <BelongingsTab />}
+        {active === 'family' && <FamilyTab onRetire={() => setRetiring(true)} />}
+        {active === 'fair' && <FairTab />}
         {active === 'stats' && <StatsTab />}
       </main>
 
-      <aside class="log" aria-live="polite">
-        <h3>Village gossip</h3>
-        {[...g.log]
-          .reverse()
-          .slice(0, 40)
-          .map((e) => (
-            <div class={`log-line ${e.kind}`}>
-              <span class="muted small">{time(e.t)}</span> {e.text}
+      <aside class="side">
+        <section class="goals" data-testid="goals">
+          <h3>To do</h3>
+          {goals.map((goal) => (
+            <div class="goal">
+              <div class="small">{goal.text}</div>
+              {goal.need !== undefined && goal.have !== undefined && (
+                <Bar value={goal.have} max={goal.need} kind="goal" label={`${num(Math.min(goal.have, goal.need))} / ${num(goal.need)}`} />
+              )}
             </div>
           ))}
+        </section>
+        <section class="log" aria-live="polite">
+          <h3>Village gossip</h3>
+          {[...g.log]
+            .reverse()
+            .slice(0, 40)
+            .map((e) => (
+              <div class={`log-line ${e.kind}`}>
+                <span class="muted small">{time(e.t)}</span> {e.text}
+              </div>
+            ))}
+        </section>
       </aside>
 
-      {offline && (
+      {card && (
+        <div class="modal" role="dialog" data-testid="story">
+          <div class="modal-box story">
+            <h2>{card.title}</h2>
+            {card.body.map((p) => (
+              <p>{p}</p>
+            ))}
+            {card.levers && (
+              <>
+                <h3>What you control</h3>
+                <ul>
+                  {card.levers.map((l) => (
+                    <li>{l}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <p class="muted small">Time stands still while you read.</p>
+            <Btn
+              onClick={() => {
+                act(dismissCard);
+                if (card.opens?.[0] && card.id !== 'intro') setTab(card.opens[0]);
+              }}
+              kind="primary"
+              testid="story-ok"
+            >
+              {card.opens?.[0] && card.id !== 'intro' ? `Right then (open ${TAB_LABELS[card.opens[0]]})` : 'Right then'}
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {!card && (g.dead || retiring) && <Heir retiring={!g.dead} onClose={() => setRetiring(false)} />}
+
+      {!card && !g.dead && !retiring && (offline || notice) && (
         <div class="modal" role="dialog">
           <div class="modal-box">
-            <h3>While you were away ({time(offline.seconds)})</h3>
-            <ul>
-              <li>+{num(offline.gold)} gold</li>
-              <li>+{offline.levels} chore levels</li>
-              <li>{num(offline.kills)} things knocked out</li>
-              <li>{offline.items} items found</li>
-            </ul>
-            <p class="muted small">Away time is capped at 8 hours.</p>
-            <Btn onClick={() => setOffline(null)} kind="primary">
+            {notice && <p>{notice}</p>}
+            {offline && (
+              <>
+                <h3>While you were away ({time(offline.seconds)})</h3>
+                <ul>
+                  <li>{num(offline.made)} goods made</li>
+                  <li>{num(offline.earned)}d earned</li>
+                  <li>{offline.tithes} Michaelmas{offline.tithes === 1 ? '' : 'es'} passed</li>
+                </ul>
+                <p class="muted small">Away time is capped at 8 hours. Hob never dies while you're away; he waits for you.</p>
+              </>
+            )}
+            <Btn
+              onClick={() => {
+                setOffline(null);
+                setNotice(null);
+              }}
+              kind="primary"
+            >
               Back to work
             </Btn>
           </div>

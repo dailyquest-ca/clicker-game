@@ -1,7 +1,4 @@
 import { useState } from 'preact/hooks';
-import { BOSSES } from '../../content/bosses';
-import { ACHIEVEMENTS } from '../../content/upgrades';
-import { computeStats } from '../../core/formulas';
 import { deserialize, serialize } from '../../core/save';
 import { newGame } from '../../core/state';
 import { Btn } from '../bits';
@@ -17,47 +14,26 @@ function decode(code: string): string {
 
 export function StatsTab() {
   const g = useGame();
-  const stats = computeStats(g);
   const [code, setCode] = useState('');
   const [message, setMessage] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
-
+  const r = g.records;
   return (
     <div class="panel">
       <h2>Stats</h2>
       <table class="kv">
         <tbody>
           <tr><td>Time played</td><td>{time(g.totalTime)}</td></tr>
-          <tr><td>This life</td><td>{time(g.lifeTime)}</td></tr>
-          <tr><td>Rebirths</td><td>{g.rebirths}</td></tr>
-          <tr><td>Furthest boss</td><td>{g.records.bestBossEver ? BOSSES[g.records.bestBossEver - 1]?.name : '—'}</td></tr>
-          <tr><td>Power / Guard</td><td>{num(stats.power)} / {num(stats.guard)} (×{stats.powerMult.toFixed(2)} / ×{stats.guardMult.toFixed(2)} from bonuses)</td></tr>
-          <tr><td>Gold / drop multipliers</td><td>×{stats.goldMult.toFixed(2)} / ×{stats.dropMult.toFixed(2)}</td></tr>
-          <tr><td>Things knocked out</td><td>{num(g.records.totalKills)}</td></tr>
-          <tr><td>Gold earned, all lives</td><td>{num(g.records.totalGold)}</td></tr>
-          <tr><td>Items found</td><td>{num(g.records.itemsFound)}</td></tr>
-          <tr><td>Memories earned, all lives</td><td>{num(g.records.memoriesEarned)}</td></tr>
+          <tr><td>This Hob</td><td>{time(g.lifeTime)}</td></tr>
+          <tr><td>Generations</td><td>{g.life}</td></tr>
+          <tr><td>Goods sold, all lives</td><td>{num(r.soldTotal)}</td></tr>
+          <tr><td>Pennies earned, all lives</td><td>{num(r.earnedTotal)}</td></tr>
+          <tr><td>Things bought</td><td>{num(r.purchases)}</td></tr>
+          <tr><td>Tithes paid / missed</td><td>{r.tithesMet} / {r.tithesMissed}</td></tr>
+          <tr><td>Odd things found</td><td>{num(r.itemsFound)}</td></tr>
+          <tr><td>Goods sold off cheap (barn full)</td><td>{num(g.wastedGoods)} this life</td></tr>
         </tbody>
       </table>
-
-      <h3>Achievements ({g.achievements.length}/{ACHIEVEMENTS.length})</h3>
-      <p class="muted small">Each one adds 3% to Power and Guard.</p>
-      <ul class="achievements">
-        {ACHIEVEMENTS.map((a) => {
-          const got = g.achievements.includes(a.id);
-          return (
-            <li class={got ? 'got' : ''}>
-              {got || !a.secret ? (
-                <>
-                  <strong>{a.name}</strong>: {a.desc}
-                </>
-              ) : (
-                <span class="muted">??? (secret)</span>
-              )}
-            </li>
-          );
-        })}
-      </ul>
 
       <h3>Save</h3>
       <p class="muted small">The game saves itself every few seconds. Export a code to move it or keep a backup.</p>

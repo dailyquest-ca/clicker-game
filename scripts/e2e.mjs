@@ -1,6 +1,6 @@
 // End-to-end smoke test: `npm run e2e`.
-// Starts the dev server, plays through the loop with real clicks (using the ?debug time-skip helper),
-// saves screenshots to artifacts/, and fails on any console error.
+// Starts the dev server, plays the first life and the start of the second with real clicks (using the ?debug
+// time-skip helper), saves screenshots to artifacts/, and fails on any console error.
 
 import { mkdirSync } from 'node:fs';
 import { chromium } from 'playwright-core';
@@ -31,37 +31,30 @@ function check(cond, message) {
   if (!cond) throw new Error(`E2E check failed: ${message}`);
   console.log(`ok - ${message}`);
 }
-
-async function spendIdleStamina() {
-  await tab('chores');
-  const plusHay = page.locator('[data-testid=plus-hay]');
-  if (!(await plusHay.isEnabled())) return;
-  await page.click('button.chip:has-text("50%")');
-  await plusHay.click();
-  await page.click('button.chip:has-text("All")');
-  const plusDodge = page.locator('[data-testid=plus-dodge]');
-  if (await plusDodge.isEnabled()) await plusDodge.click();
-}
-
-async function beatBosses(target, maxRounds = 80) {
-  for (let i = 0; i < maxRounds; i++) {
-    const g = await state();
-    if (g.bossesBeaten >= target) return;
-    await tab('fight');
-    if (g.fight && g.fight.result) {
-      await page.click('[data-testid=fight-ok]');
-      continue;
-    }
-    const winnable = await page.locator('[data-testid=prediction].good').count();
-    if (winnable) {
-      await page.click('[data-testid=fight]');
-      await advance(31);
-      continue;
-    }
-    await spendIdleStamina();
-    await advance(20);
+/** Read every queued story card. Returns the titles. */
+async function readCards() {
+  await page.waitForTimeout(150); // one tick, in case a card is about to be queued
+  const titles = [];
+  for (let i = 0; i < 20 && (await page.locator('[data-testid=story-ok]').count()) > 0; i++) {
+    titles.push(await page.locator('[data-testid=story] h2').innerText());
+    await page.click('[data-testid=story-ok]');
   }
-  throw new Error(`could not reach boss ${target}`);
+  return titles;
+}
+async function sellHay() {
+  await tab('market');
+  const btn = page.locator('[data-testid=sell-hay]');
+  if (await btn.isEnabled()) await btn.click();
+}
+/** Cut and sell hay until we can afford `cost`. */
+async function earn(cost, maxRounds = 40) {
+  for (let i = 0; i < maxRounds; i++) {
+    await sellHay();
+    if ((await state()).pennies >= cost) return;
+    await advance(10);
+    await readCards();
+  }
+  throw new Error(`could not earn ${cost}d`);
 }
 
 try {
@@ -69,62 +62,120 @@ try {
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   check((await page.title()).includes('Serf'), 'page loads');
+  check((await page.locator('[data-testid=story] h2').innerText()) === 'The Ledger', 'the intro card explains why we are here');
+  await shot('01-intro');
+  const t0 = (await state()).totalTime;
+  await page.waitForTimeout(600);
+  check((await state()).totalTime === t0, 'time stands still while a story card is open');
+  await readCards();
+  check((await page.locator('[data-testid=goals]').innerText()).includes('Cut 8 hay'), 'the first goal is to cut hay');
 
-  await advance(10);
-  await spendIdleStamina();
-  await advance(20);
+  await advance(25);
+  let titles = await readCards();
+  check(titles.includes('Market Day'), `the market is introduced once there is hay (${titles.join(', ')})`);
+  await sellHay();
   let g = await state();
-  check(g.chores.hay.level > 0 && g.chores.dodge.level > 0, `chores level up (hay ${g.chores.hay.level}, dodge ${g.chores.dodge.level})`);
-  await shot('01-chores');
+  check(g.pennies > 0, `selling hay earns pennies (${g.pennies.toFixed(1)}d)`);
+  await shot('02-market');
+  await advance(2);
+  titles = await readCards();
+  check(titles.includes('The Village Shop'), 'the shop is introduced after the first sale');
 
-  await tab('fight');
-  check((await page.locator('[data-testid=prediction]').count()) === 1, 'fight shows a prediction');
-  await beatBosses(1);
-  check((await state()).unlocked.market, 'beating the rooster opens the Market');
-  await shot('02-fight');
+  await earn(20);
+  await tab('shop');
+  await shot('03-shop');
+  await page.click('[data-testid=buy-hen]');
+  g = await state();
+  check(g.owned.hen === 1, 'buy a hen');
+  titles = await readCards();
+  check(titles.includes('A Hen!'), 'the hen gets her own card');
+  await tab('work');
+  await page.click('[data-testid=less-hay]');
+  await page.click('[data-testid=more-eggs]');
+  g = await state();
+  check(g.pips.eggs === 1 && g.pips.hay === 2, 'move a pip from hay to eggs');
+  await shot('04-work');
 
+  // Through the first Michaelmas, keeping hay back for Gerald with the basket.
+  g = await state();
+  await advance(122 - g.lifeTime);
+  titles = await readCards();
+  g = await state();
+  check(g.records.tithesMet === 1, `the first tithe is paid from the barn (${titles.join(', ')})`);
+  check(g.tabs.includes('manor'), 'the Steward & Debt tab is open');
+  await tab('manor');
+  await earn(10);
+  await tab('manor');
+  await page.click('[data-testid=pay-10]');
+  check((await state()).debtPaid === 10, 'pay 10d toward the debt');
+  await shot('05-manor');
+
+  // Mother Agnes wants six eggs for a cake.
+  for (let i = 0; i < 20 && (await state()).goods.egg < 6; i++) await advance(10);
+  await readCards();
   await tab('market');
-  await advance(1);
-  await shot('03-market');
+  await page.click('[data-testid=deliver-agnes]');
+  titles = await readCards();
+  g = await state();
+  check(g.demandsDone.includes('agnes') && titles.includes('Belongings'), "Agnes's demand pays in headwear");
+  await tab('belongings');
+  await page.click('[data-testid=wear-bucketHat]');
+  check((await state()).equipped.head?.id === 'bucketHat', 'wear the bucket');
+  await shot('06-belongings');
 
-  await beatBosses(2);
-  await tab('adventure');
-  await page.click('[data-testid=go-zone-0]');
-  await advance(60);
-  g = await state();
-  check(g.adventure.kills > 0, `adventure kills enemies (${g.adventure.kills} kills)`);
-  await shot('04-adventure');
+  await earn(30);
+  await tab('shop');
+  await page.click('[data-testid=buy-porridge]');
+  check((await state()).owned.porridge === 1, 'buy porridge for a fourth pip');
+  await tab('work');
+  await page.click('[data-testid=more-hay]');
 
-  await beatBosses(3);
+  // Let the market sell for us from now on.
+  await earn(1000, 6).catch(() => {});
+  await tab('market');
+  check((await page.locator('[data-testid=standing-hay]').count()) === 1, 'standing orders unlock after enough sales');
+  await page.click('[data-testid=standing-hay]');
+  await page.click('[data-testid=standing-egg]');
+  await shot('07-market-standing');
+
+  // Grow old, paying the debt as the years go.
+  for (let i = 0; i < 20 && !(await state()).dead; i++) {
+    await advance(100);
+    await readCards();
+    g = await state();
+    if (!g.dead && g.pennies >= 10) {
+      await tab('manor');
+      await page.click('[data-testid=pay-half]');
+    }
+  }
   g = await state();
-  if (g.lifeTime < 400) await advance(400 - g.lifeTime);
-  await tab('inventory');
-  const invBefore = (await state()).inventory.length;
-  if (await page.locator('[data-testid=merge-all]').isEnabled()) await page.click('[data-testid=merge-all]');
-  await page.locator('.item button:has-text("Wear")').first().click();
+  check(g.dead && g.yearsPaid === 9, `Hob dies after nine years (${g.records.tithesMet} tithes paid, ${g.records.tithesMissed} missed)`);
+  check((await page.locator('[data-testid=heir]').count()) === 1, 'the heir screen waits');
+  await shot('08-heir');
+  const paidBefore = g.debtPaid;
+  const leftBehind = g.pennies;
+  await page.click('[data-testid=pass-on]');
   g = await state();
-  check(Object.values(g.equipped).some(Boolean), 'can wear an item');
-  check(g.inventory.length < invBefore, `merging and wearing empty the sack (${invBefore} -> ${g.inventory.length})`);
-  await shot('05-inventory');
-  await tab('rebirth');
-  await shot('06-rebirth-before');
-  const before = await state();
-  await page.click('[data-testid=rebirth]');
-  await page.click('[data-testid=rebirth-confirm]');
-  g = await state();
-  check(g.rebirths === 1 && g.memories > 0, `rebirth grants Memories (${g.memories})`);
-  check(g.inventory.length + Object.values(g.equipped).filter(Boolean).length >= before.inventory.length, 'items survive rebirth');
-  await page.click('[data-testid=buy-perk-habit]');
-  check((await state()).perks.habit === 1, 'can buy a perk');
-  await shot('07-rebirth-after');
+  check(g.life === 2 && !g.dead && g.pennies === 0, 'the next Hob takes over');
+  check(g.chronicle.length === 1, 'the chronicle remembers him');
+  check(g.debtPaid >= paidBefore + leftBehind * 0.5 - 0.01, `the heriot paid half of what he left toward the debt (${paidBefore.toFixed(0)} → ${g.debtPaid.toFixed(0)}d)`);
+  check(g.debtPaid > 100, `the first Hob paid a fair bit of the debt (${g.debtPaid.toFixed(0)}d)`);
+  titles = await readCards();
+  check(titles.includes('The Lammas Fair') && titles.includes('The Heir'), `life 2 introduces new things (${titles.join(', ')})`);
+  await tab('family');
+  await shot('09-family');
+  await tab('fair');
+  check((await page.locator('[data-testid=contest]').count()) === 1, 'the fair has a contest this year');
+  await shot('10-fair');
 
   await page.reload();
-  await page.waitForSelector('[data-testid=tab-rebirth]');
+  await page.waitForSelector('[data-testid=tab-fair]');
+  await readCards();
   g = await state();
-  check(g.rebirths === 1 && g.perks.habit === 1, 'progress survives a reload');
+  check(g.life === 2 && g.chronicle.length === 1, 'progress survives a reload');
 
   await tab('stats');
-  await shot('08-stats');
+  await shot('11-stats');
   check(errors.length === 0, `no console errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   console.log('\nE2E passed. Screenshots in artifacts/.');
 } catch (e) {

@@ -4,12 +4,12 @@ export const DEATH_CAUSES = [
   'a bad turnip',
   'excessive opinions from a rooster',
   'falling into the moat (there is no moat)',
-  'a cold you insisted was nothing',
+  'a cold he insisted was nothing',
   'laughing at the Bailiff, out loud',
   'an argument with a goose about property rights',
   'eating the Mushroom of Questionable Origin, fully',
-  'old age, at 31, which was normal at the time',
-  'trying to lift the goat instead of wrestling it',
+  'old age, which was considered greedy',
+  'trying to lift a hay bale and a grudge at once',
   'a sudden and total lack of luck',
 ];
 
@@ -18,24 +18,26 @@ export const AMBIENT_LINES = [
   'Gerald walks past and writes something down.',
   'It rains. Of course it rains.',
   'You find a coin. It is a button.',
-  'The goat is watching. The goat is always watching.',
+  'The hens are holding a meeting. You are not invited.',
   'A travelling monk tells you to work harder. Then he leaves.',
   'Somewhere, a Lord sneezes. You feel this is your fault.',
   'The hay is damp again. The hay is always damp.',
   'A child asks if you are a knight. You are not. You say yes.',
-  'You stub your toe on destiny. It is a rock.',
+  'Someone mentions the goat. Everyone goes quiet.',
 ];
 
-export const CHORE_MILESTONE_LINES: Record<string, string[]> = {
-  hay: ['Your arms remember hay.', 'You can now carry hay and a grudge.', 'The hay fears you.'],
-  dodge: ['Gerald misses. Gerald is furious.', 'You dodge a stick, a fine and a responsibility.', 'You are a blur. A muddy blur.'],
-  goat: ['The goat respects you now.', 'The goat taught you a move. You will not repeat it.', 'You and the goat are rivals. Maybe friends.'],
-  punch: ['Your brother tires before you do.', 'You took a punch and gave a look.', 'Your face has achieved a kind of peace.'],
+export const PRACTICE_LINES: Record<string, string[]> = {
+  hay: ['Your arms remember hay.', 'You can cut hay in your sleep. You have.', 'The hay fears you.'],
+  eggs: ['The hens trust you now.', 'You can tell the hens apart. They can’t tell you apart.', 'An egg lands in your hand before it lands at all.'],
+  logs: ['The axe feels lighter. You feel heavier.', 'Trees flinch when you pass.', 'You split a log by looking at it. Nearly.'],
+  rummage: ['You know where the good dung is.', 'You can smell a boot at forty paces.', 'The heap respects you.'],
 };
 
-export function epitaph(cause: string, ageYears: number, bosses: number): string {
-  if (bosses >= 10) return `Toppled the Bailiff, then died of ${cause} at ${ageYears}. Legend.`;
-  if (bosses >= 6) return `Feared by tax collectors. Died of ${cause} at ${ageYears}.`;
-  if (bosses >= 3) return `Got the better of Gerald. Died of ${cause} at ${ageYears}.`;
-  return `Lost an argument with poultry. Died of ${cause} at ${ageYears}.`;
+export const HEIR_NAMES = ['Hob', 'Hob the Younger', 'Hob the Even Younger', 'Young Hob', 'Hob (Again)', 'Hob the Persistent', 'Hob the Sixth-ish', 'Hob the Hopeful', 'Hob the Nearly Free', 'Hob the Tired'];
+
+export function epitaph(cause: string, age: number, paid: number): string {
+  if (paid >= 2000) return `Paid ${paid} pennies of the goat debt. The village will sing of it (badly). Died of ${cause} at ${age}.`;
+  if (paid >= 500) return `Chipped ${paid} pennies off the goat debt. Died of ${cause} at ${age}.`;
+  if (paid > 0) return `Paid ${paid} pennies toward the goat. Died of ${cause} at ${age}.`;
+  return `Paid nothing toward the goat. Gerald has noted this. Died of ${cause} at ${age}.`;
 }

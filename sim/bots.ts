@@ -1,330 +1,348 @@
-// Bot strategies that play the real rules. They exist to answer one question:
-// do smart choices actually beat naive ones, and is any single strategy "solved"?
+// Simulated players. They use only the public actions and formulas, so they play by the same rules as a person.
 
-import { BOSSES } from '../src/content/bosses';
-import { CHORES } from '../src/content/chores';
+import { BALANCE } from '../src/core/balance';
+import { CHORES, GOOD_IDS, chore } from '../src/content/chores';
 import { itemDef } from '../src/content/items';
-import { PERKS, UPGRADES } from '../src/content/upgrades';
-import { ZONES } from '../src/content/zones';
+import { TRADITIONS } from '../src/content/shop';
 import {
-  buyPerk,
-  buyUpgrade,
-  discard,
-  dismissFight,
+  assign,
+  buy,
+  buyTradition,
+  deliver,
+  enterFair,
   equip,
   mergeAll,
-  rebirth,
-  setSplit,
-  setZone,
-  startFight,
-  zoneUnlocked,
+  passOn,
+  payDebt,
+  sell,
+  sellAllSpare,
+  setPips,
+  setSavingFor,
+  setStanding,
 } from '../src/core/actions';
-import { BALANCE } from '../src/core/balance';
 import {
-  canRebirth,
-  choreCost,
-  choreEfficiency,
-  choreUnlocked,
-  computeStats,
-  damageTaken,
-  inventorySize,
-  memoryRate,
-  perkCost,
-  predictFight,
-  previewStats,
+  SLOTS,
+  activeDemands,
+  allItems,
+  barnCap,
+  bestSplit,
+  canDeliver,
+  canRetire,
+  choreVisible,
+  contestDef,
+  contestScore,
+  contestTarget,
+  entryFee,
+  goodsCount,
+  hasBadBack,
+  workingLeft,
+  heirloomSlots,
+  itemSaleValue,
+  lifespan,
+  reserve,
   scaledItemStats,
-  upgradeCost,
-  type Stats,
+  shopCost,
+  shopPreview,
+  shopStock,
+  standingUnlocked,
+  titheDue,
+  toMichaelmas,
+  totalPips,
+  traditionCost,
+  winChance,
+  workMult,
+  yearTime,
 } from '../src/core/formulas';
-import type { ChoreId, GameState, PerkId, Stat, UpgradeId } from '../src/core/types';
+import type { Bonuses, ChoreId, GameState, GoodId, ItemInstance, ShopId, TraditionId } from '../src/core/types';
 
 export interface Bot {
   name: string;
+  /** Seconds of game time between decisions. */
+  interval: number;
   act(state: GameState): void;
+  /** The shop item the bot is saving for right now, if any (for the drowning metric). */
+  target?: ShopId | null;
 }
+
+const SMART_TRADITIONS: TraditionId[] = ['knack', 'gab', 'familyHen', 'shoulders', 'contacts', 'hardy', 'sentimental'];
+const GOOD_CHORE: Record<GoodId, ChoreId> = { hay: 'hay', egg: 'eggs', log: 'logs' };
 
 // ---------- shared helpers ----------
 
-function bestChoreFor(state: GameState, stat: Stat): ChoreId | null {
-  let best: ChoreId | null = null;
-  let bestEff = -1;
-  for (const def of CHORES) {
-    if (def.stat !== stat || !choreUnlocked(state, def)) continue;
-    const eff = choreEfficiency(state, def);
-    if (eff > bestEff) {
-      bestEff = eff;
-      best = def.id;
-    }
-  }
-  return best;
+/** Rough income value of an item's stats, for picking what to wear. */
+function itemScore(state: GameState, item: ItemInstance): number {
+  const s = scaledItemStats(item) as Partial<Bonuses>;
+  const split = bestSplit(state);
+  const pips = totalPips(state) || 1;
+  const share = (c: ChoreId) => split[c] / pips;
+  return (
+    (s.hayPct ?? 0) * share('hay') +
+    (s.eggPct ?? 0) * share('eggs') * 2 +
+    (s.logPct ?? 0) * share('logs') * 3 +
+    (s.workPct ?? 0) * 1.5 +
+    (s.pricePct ?? 0) * 1.5 +
+    (s.pips ?? 0) * 25 +
+    (s.luckPct ?? 0) * 0.1 +
+    (s.barn ?? 0) * 0.1 +
+    (s.rummagePct ?? 0) * 0.05
+  );
 }
 
-function splitByStat(state: GameState, powerShare: number): void {
-  const p = bestChoreFor(state, 'power');
-  const g = bestChoreFor(state, 'guard');
-  const fractions: Partial<Record<ChoreId, number>> = {};
-  if (p) fractions[p] = powerShare;
-  if (g) fractions[g] = (fractions[g] ?? 0) + (1 - powerShare);
-  setSplit(state, fractions);
-}
-
-/** log(time-to-die / time-to-kill) for the next boss: positive means you'd win. */
-function bossMargin(stats: Stats, state: GameState): number {
-  const boss = BOSSES[state.bossesBeaten];
-  if (!boss) return 0;
-  const p = predictFight(stats, boss);
-  const timeoutPenalty = p.ttk > BALANCE.fightTimeout ? Math.log(BALANCE.fightTimeout / p.ttk) : 0;
-  return Math.log(Math.max(1e-9, p.ttd) / Math.max(1e-9, p.ttk)) + timeoutPenalty;
-}
-
-function tryFight(state: GameState): void {
-  if (state.fight?.result) dismissFight(state);
-  const boss = BOSSES[state.bossesBeaten];
-  if (!boss || state.fight) return;
-  if (predictFight(computeStats(state), boss).win) startFight(state);
-}
-
-function zoneGoldRate(zone: number, stats: Stats): number {
-  const z = ZONES[zone];
-  if (!z) return 0;
-  const net = damageTaken(z.atk, stats.guard) - (BALANCE.adventureRegenPct / 100) * stats.maxHp;
-  let alive = 1;
-  if (net > 0) {
-    const aliveTime = stats.maxHp / net;
-    alive = aliveTime / (aliveTime + stats.recovery);
-  }
-  const kps = (alive * stats.power) / z.hp;
-  const dropValue = Math.min(0.95, z.dropChance * stats.dropMult) * (zone + 1) * 40;
-  return kps * (z.gold * stats.goldMult + dropValue);
-}
-
-function aliveFraction(zone: number, stats: Stats): number {
-  const z = ZONES[zone];
-  if (!z) return 0;
-  const net = damageTaken(z.atk, stats.guard) - (BALANCE.adventureRegenPct / 100) * stats.maxHp;
-  if (net <= 0) return 1;
-  const aliveTime = stats.maxHp / net;
-  return aliveTime / (aliveTime + stats.recovery);
-}
-
-function itemScoreFlat(id: string, level: number): number {
-  const s = scaledItemStats({ uid: 0, id, level });
-  return (s.powerFlat ?? 0) + (s.guardFlat ?? 0);
-}
-
-function manageItemsSimple(state: GameState): void {
+function wearBest(state: GameState): void {
   mergeAll(state);
-  for (const item of [...state.inventory]) {
-    const slot = itemDef(item.id).slot;
-    const cur = state.equipped[slot];
-    if (!cur || itemScoreFlat(item.id, item.level) > itemScoreFlat(cur.id, cur.level)) equip(state, item.uid);
-  }
-  while (state.inventory.length >= inventorySize(state) - 1) {
-    const worst = [...state.inventory].sort((a, b) => itemScoreFlat(a.id, a.level) - itemScoreFlat(b.id, b.level))[0];
-    if (!worst) break;
-    discard(state, worst.uid);
+  for (const slot of SLOTS) {
+    const candidates = allItems(state).filter((i) => itemDef(i.id).slot === slot);
+    if (candidates.length === 0) continue;
+    const best = candidates.reduce((a, b) => (itemScore(state, b) > itemScore(state, a) ? b : a));
+    if (state.equipped[slot]?.uid !== best.uid) equip(state, best.uid);
   }
 }
 
-function manageItemsSmart(state: GameState): void {
-  mergeAll(state);
-  // Equip whatever improves the next-boss margin (plus a little credit for gold and drops).
-  const value = (s: Stats) => bossMargin(s, state) + 0.15 * Math.log(s.goldMult) + 0.05 * Math.log(s.dropMult);
-  let improved = true;
-  let guard = 0;
-  while (improved && guard++ < 20) {
-    improved = false;
-    const baseValue = value(computeStats(state));
-    let bestUid = -1;
-    let bestGain = 1e-6;
-    for (const item of state.inventory) {
-      const { after } = previewStats(state, (s) => {
-        s.equipped[itemDef(item.id).slot] = item;
-      });
-      const gain = value(after) - baseValue;
-      if (gain > bestGain) {
-        bestGain = gain;
-        bestUid = item.uid;
+/** Goods to stockpile for villagers' demands, skipping any that won't fit in the barn alongside the tithe. */
+function demandNeeds(state: GameState): Record<GoodId, number> {
+  const need: Record<GoodId, number> = { hay: 0, egg: 0, log: 0 };
+  const tithe = Object.values(titheDue(state)).reduce((s, n) => s + (n ?? 0), 0);
+  let room = barnCap(state) - tithe - 5;
+  for (const d of activeDemands(state)) {
+    const total = Object.values(d.wants).reduce((s, n) => s + (n ?? 0), 0);
+    if (total > room) continue;
+    room -= total;
+    for (const [g, n] of Object.entries(d.wants) as [GoodId, number][]) need[g] += n;
+  }
+  return need;
+}
+
+function bestHeirlooms(state: GameState): number[] {
+  return allItems(state)
+    .sort((a, b) => itemScore(state, b) - itemScore(state, a) || itemSaleValue(b) - itemSaleValue(a))
+    .slice(0, heirloomSlots(state))
+    .map((i) => i.uid);
+}
+
+function spendLore(state: GameState, order: TraditionId[]): void {
+  for (let guard = 0; guard < 50; guard++) {
+    const affordable = order.filter((id) => {
+      const def = TRADITIONS.find((t) => t.id === id)!;
+      return state.traditions[id] < def.max && traditionCost(state, id) <= state.lore;
+    });
+    const pickId = affordable[0];
+    if (!pickId || !buyTradition(state, pickId)) return;
+  }
+}
+
+/** Pips needed on a chore to make `n` more goods in `seconds`. */
+function pipsFor(state: GameState, c: ChoreId, n: number, seconds: number): number {
+  if (n <= 0) return 0;
+  const perPip = (BALANCE.pipWork * workMult(state, c)) / chore(c).work;
+  return Math.ceil(n / (perPip * Math.max(10, seconds)));
+}
+
+// ---------- the bots ----------
+
+export interface SmartOptions {
+  /** Hold all pennies till death and let the heriot pay (an exploit to check). */
+  hoard?: boolean;
+  /** Never sell goods (another exploit to check). */
+  neverSell?: boolean;
+  /** Retire as soon as the back goes. */
+  retireEarly?: boolean;
+  /** Sell everything just before this Michaelmas (1-based) to force a missed tithe. */
+  forceMissYear?: number;
+}
+
+/** Plays like a thoughtful person: plans for the tithe, buys what pays back fastest, pays the debt late. */
+export function smartBot(opts: SmartOptions = {}): Bot {
+  const bot: Bot = {
+    name: opts.hoard ? 'hoarder' : opts.neverSell ? 'never-sell' : opts.retireEarly ? 'retire-early' : opts.forceMissYear ? 'forced-miss' : 'smart',
+    interval: 1,
+    target: null,
+    act(state) {
+      if (state.dead || (opts.retireEarly && hasBadBack(state) && canRetire(state))) {
+        if (!state.dead) payDebt(state, state.pennies);
+        passOn(state, bestHeirlooms(state));
+        spendLore(state, SMART_TRADITIONS);
+        return;
       }
-    }
-    if (bestUid >= 0) {
-      equip(state, bestUid);
-      improved = true;
-    }
-  }
-  while (state.inventory.length >= inventorySize(state) - 1) {
-    const worst = [...state.inventory].sort((a, b) => itemScoreFlat(a.id, a.level) - itemScoreFlat(b.id, b.level))[0];
-    if (!worst) break;
-    discard(state, worst.uid);
-  }
+      wearBest(state);
+      for (const d of activeDemands(state)) if (canDeliver(state, d)) deliver(state, d.id);
+
+      // Pips: cover the tithe and any demands first, then chase income.
+      const due = titheDue(state);
+      const demand = demandNeeds(state);
+      const split = { hay: 0, eggs: 0, logs: 0, rummage: 0 } as Record<ChoreId, number>;
+      let free = totalPips(state);
+      for (const g of GOOD_IDS) {
+        const c = GOOD_CHORE[g];
+        if (!choreVisible(state, c)) continue;
+        const short = Math.max(0, (due[g] ?? 0) - state.goods[g]);
+        const extra = Math.max(0, demand[g] - Math.max(0, state.goods[g] - (due[g] ?? 0)));
+        let n = Math.max(pipsFor(state, c, short * 1.15, toMichaelmas(state) - 5), pipsFor(state, c, extra, 150));
+        if (c === 'eggs') n = Math.min(n, state.owned.hen);
+        n = Math.min(n, free);
+        split[c] += n;
+        free -= n;
+      }
+      const best = bestSplit({ ...state, owned: { ...state.owned } });
+      for (const c of CHORES.map((x) => x.id)) {
+        const want = Math.max(0, best[c] - split[c]);
+        const room = c === 'eggs' ? Math.max(0, state.owned.hen - split.eggs) : want;
+        const n = Math.min(want, room, free);
+        split[c] += n;
+        free -= n;
+      }
+      if (free > 0 && state.life > 1) split.rummage += Math.min(free, 1);
+      if (free > 0) split.hay += free;
+      setPips(state, split);
+
+      // Selling.
+      if (opts.forceMissYear && state.yearsPaid === opts.forceMissYear - 1 && toMichaelmas(state) < 3) {
+        for (const g of GOOD_IDS) setStanding(state, g, null);
+        state.basket = false;
+        sellAllSpare(state);
+        state.basket = true;
+      } else if (!opts.neverSell) {
+        if (standingUnlocked(state)) for (const g of GOOD_IDS) setStanding(state, g, demand[g]);
+        else for (const g of GOOD_IDS) if (state.goods[g] > (due[g] ?? 0) + demand[g]) sellSpareKeeping(state, g, demand[g]);
+      }
+
+      // The fair.
+      if (state.fairContest && !state.fairEntered && yearTime(state) < BALANCE.fairAt) {
+        const c = contestDef(state.fairContest);
+        if (winChance(contestScore(state, c), contestTarget(state, c)) >= 0.6 && state.pennies >= entryFee(state, c) * 3) enterFair(state);
+      }
+
+      // Spending: the best payback that will repay well before the end of this life, else the debt.
+      const left = lifespan(state) - state.lifeTime;
+      let bestId: ShopId | null = null;
+      let bestPayback = Infinity;
+      for (const id of shopStock(state)) {
+        const p = shopPreview(state, id);
+        let payback = p.payback;
+        if (id === 'basket' || id === 'barn') payback = goodsCount(state) >= barnCap(state) * 0.8 ? shopCost(state, id) / 0.3 : Infinity;
+        if (payback < bestPayback) {
+          bestPayback = payback;
+          bestId = id;
+        }
+      }
+      if (bestId && bestPayback < left) {
+        bot.target = bestId;
+        setSavingFor(state, bestId);
+        if (buy(state, bestId)) bot.target = null;
+      } else {
+        bot.target = null;
+        if (!opts.hoard) payDebt(state, Math.max(0, state.pennies - 30));
+      }
+      // The last year: everything goes to the debt (the heriot only pays half).
+      if (!opts.hoard && left < BALANCE.yearSeconds) payDebt(state, state.pennies);
+    },
+  };
+  return bot;
 }
 
-function buyCheapestUpgrade(state: GameState): void {
-  let bought = true;
-  while (bought) {
-    bought = false;
-    const sorted = [...UPGRADES].sort((a, b) => upgradeCost(a, state.upgrades[a.id]) - upgradeCost(b, state.upgrades[b.id]));
-    for (const up of sorted) if (buyUpgrade(state, up.id)) bought = true;
-  }
+function sellSpareKeeping(state: GameState, g: GoodId, keep: number): void {
+  sell(state, g, state.goods[g] - reserve(state, g) - keep);
 }
 
-function buyCheapestPerks(state: GameState): void {
-  let bought = true;
-  while (bought) {
-    bought = false;
-    const sorted = [...PERKS]
-      .filter((p) => state.perks[p.id] < p.maxLevel)
-      .sort((a, b) => perkCost(a, state.perks[a.id]) - perkCost(b, state.perks[b.id]));
-    const first = sorted[0];
-    if (first && buyPerk(state, first.id)) bought = true;
-  }
-}
-
-class StuckTimer {
-  private lastBosses = -1;
-  private since = 0;
-  stuckFor(state: GameState): number {
-    if (state.bossesBeaten !== this.lastBosses || state.lifeTime < this.since) {
-      this.lastBosses = state.bossesBeaten;
-      this.since = state.lifeTime;
-    }
-    return state.lifeTime - this.since;
-  }
-}
-
-// ---------- bots ----------
-
-/** Puts everything in whichever chore is cheapest right now; buys whatever is cheapest; rebirths only when stuck for 10 minutes. */
+/** Plays like someone who doesn't read: even pip split, buys the cheapest thing, sells everything now and then. */
 export function naiveBot(): Bot {
-  const stuck = new StuckTimer();
+  let lastSell = 0;
   return {
     name: 'naive',
+    interval: 2,
     act(state) {
-      const cheapest = CHORES.filter((d) => choreUnlocked(state, d)).sort(
-        (a, b) => choreCost(a, state.chores[a.id].level, state.rebirths) - choreCost(b, state.chores[b.id].level, state.rebirths),
-      )[0];
-      if (cheapest) setSplit(state, { [cheapest.id]: 1 });
-      tryFight(state);
-      const top = [2, 1, 0].find((z) => zoneUnlocked(state, z));
-      if (top !== undefined) setZone(state, top);
-      buyCheapestUpgrade(state);
-      manageItemsSimple(state);
-      if (canRebirth(state) && stuck.stuckFor(state) > 600) {
-        rebirth(state);
-        buyCheapestPerks(state);
+      if (state.dead) {
+        passOn(state, []);
+        spendLore(state, TRADITIONS.map((t) => t.id).sort((a, b) => traditionCost(state, a) - traditionCost(state, b)));
+        return;
       }
+      const visible = CHORES.filter((c) => choreVisible(state, c.id) && c.good).map((c) => c.id);
+      const each = Math.floor(totalPips(state) / visible.length);
+      const split: Partial<Record<ChoreId, number>> = {};
+      for (const c of visible) split[c] = each;
+      setPips(state, split);
+      assign(state, 'hay', totalPips(state));
+      if (state.totalTime - lastSell >= 20) {
+        sellAllSpare(state);
+        lastSell = state.totalTime;
+      }
+      for (const d of activeDemands(state)) if (canDeliver(state, d)) deliver(state, d.id);
+      for (const e of allItems(state)) if (!state.equipped[itemDef(e.id).slot]) equip(state, e.uid);
+      // Follows the story cards' advice: once the back goes, everything goes to the debt.
+      if (hasBadBack(state)) {
+        payDebt(state, state.pennies);
+        return;
+      }
+      const cheapest = shopStock(state)[0];
+      if (cheapest) buy(state, cheapest);
     },
   };
 }
 
-/** Fixed Power/Guard split forever. Used to check that no single split is best for every boss. */
-export function fixedSplitBot(powerShare: number): Bot {
-  const stuck = new StuckTimer();
+/**
+ * Plays like an attentive person who trusts the UI: uses the best pip split, buys whatever the shop says pays back fastest,
+ * relies on the tithe basket instead of planning, and pays everything once the back goes.
+ */
+export function casualBot(): Bot {
   return {
-    name: `fixed ${Math.round(powerShare * 100)}/${Math.round((1 - powerShare) * 100)}`,
+    name: 'casual',
+    interval: 5,
     act(state) {
-      splitByStat(state, powerShare);
-      tryFight(state);
-      const top = [2, 1, 0].find((z) => zoneUnlocked(state, z));
-      if (top !== undefined) setZone(state, top);
-      buyCheapestUpgrade(state);
-      manageItemsSimple(state);
-      if (canRebirth(state) && stuck.stuckFor(state) > 300) {
-        rebirth(state);
-        buyCheapestPerks(state);
+      if (state.dead) {
+        passOn(state, bestHeirlooms(state));
+        spendLore(state, TRADITIONS.map((t) => t.id).sort((a, b) => traditionCost(state, a) - traditionCost(state, b)));
+        return;
       }
+      wearBest(state);
+      const split = bestSplit(state);
+      // Keep one pip on hay for Gerald.
+      if (split.hay === 0) {
+        const from = split.logs > 0 ? 'logs' : 'eggs';
+        if (split[from] > 0) {
+          split[from]--;
+          split.hay++;
+        }
+      }
+      setPips(state, split);
+      if (standingUnlocked(state)) for (const g of GOOD_IDS) setStanding(state, g, 0);
+      else sellAllSpare(state);
+      for (const d of activeDemands(state)) if (canDeliver(state, d)) deliver(state, d.id);
+      if (hasBadBack(state)) {
+        payDebt(state, state.pennies);
+        return;
+      }
+      // The shop says whether something pays for itself before the back goes; if nothing does, pay the debt.
+      const options = shopStock(state)
+        .map((id) => ({ id, payback: shopPreview(state, id).payback }))
+        .filter((o) => o.payback < workingLeft(state))
+        .sort((a, b) => a.payback - b.payback);
+      if (options[0]) buy(state, options[0].id);
+      else payDebt(state, state.pennies);
     },
   };
 }
 
-/** Reads the numbers the UI shows: targets the next boss's weakness, farms the best zone, buys the best value, rebirths near peak Memories/min. */
-export interface SmartOptions {
-  split: 'archetype' | number;
-  upgrades: 'value' | 'cheapest';
-  items: 'smart' | 'simple';
-  zone: 'rate' | 'top' | 'topSafe';
-  /** Rebirth when Memories/min has fallen this far below its peak this life. */
-  rebirthBelowPeak: number;
-}
-
-export function smartBot(opts: Partial<SmartOptions> = {}): Bot {
-  const o: SmartOptions = { split: 'archetype', upgrades: 'cheapest', items: 'smart', zone: 'topSafe', rebirthBelowPeak: 0.95, ...opts };
-  const PERK_ORDER: PerkId[] = ['habit', 'strongBack', 'thickSkin', 'secondWind', 'deepLungs', 'autoMerge', 'magpie', 'packMule', 'connections'];
+/** Checks in once a minute and buys whatever it can. Used to measure "drowning": how much is affordable at each visit. */
+export function lazyBot(visits: number[]): Bot {
   return {
-    name: `smart ${JSON.stringify(o)}`,
+    name: 'lazy',
+    interval: 60,
     act(state) {
-      const stats = computeStats(state);
-
-      // 1. Stamina: read the next boss's archetype (the UI shows it) and lean that way.
-      const next = BOSSES[state.bossesBeaten];
-      const share =
-        typeof o.split === 'number' ? o.split : !next ? 0.55 : next.archetype === 'Tanky' ? 0.68 : next.archetype === 'Hard hitter' ? 0.42 : 0.55;
-      splitByStat(state, share);
-
-      tryFight(state);
-
-      // 2. Adventure: farm the zone with the best gold-and-loot rate, not just the hardest one.
-      let bestZone: number | null = null;
-      let bestRate = 0;
-      for (let z = 0; z < ZONES.length; z++) {
-        if (!zoneUnlocked(state, z)) continue;
-        const rate = zoneGoldRate(z, stats);
-        if (rate > bestRate) {
-          bestRate = rate;
-          bestZone = z;
-        }
+      if (state.dead) {
+        passOn(state, []);
+        return;
       }
-      if (o.zone === 'top') bestZone = [2, 1, 0].find((z) => zoneUnlocked(state, z)) ?? null;
-      // Loot is the real prize: farm the hardest zone you can stay alive in most of the time.
-      if (o.zone === 'topSafe') bestZone = [2, 1, 0].find((z) => zoneUnlocked(state, z) && aliveFraction(z, stats) >= 0.5) ?? ([0].find((z) => zoneUnlocked(state, z)) ?? null);
-      if (bestZone !== null) setZone(state, bestZone);
-
-      // 3. Market: best value per gold.
-      if (o.upgrades === 'cheapest') buyCheapestUpgrade(state);
-      for (let i = 0; i < 20 && o.upgrades === 'value'; i++) {
-        let pick: UpgradeId | null = null;
-        let pickScore = 0;
-        for (const up of UPGRADES) {
-          const cost = upgradeCost(up, state.upgrades[up.id]);
-          if (cost > state.gold) continue;
-          const { before, after } = previewStats(state, (s) => {
-            s.upgrades[up.id]++;
-          });
-          let value = Math.max(0, bossMargin(after, state) - bossMargin(before, state));
-          value += 0.6 * Math.log(after.cap / before.cap);
-          value += (state.lifeTime < 180 ? 0.5 : 0.1) * Math.log(after.regen / before.regen);
-          if (state.adventure.zone !== null) value += 0.3 * Math.log(after.goldMult / before.goldMult) + 0.1 * Math.log(after.dropMult / before.dropMult);
-          const score = value / cost;
-          if (score > pickScore) {
-            pickScore = score;
-            pick = up.id;
-          }
-        }
-        if (!pick || !buyUpgrade(state, pick)) break;
+      setPips(state, bestSplit(state));
+      if (standingUnlocked(state)) for (const g of GOOD_IDS) setStanding(state, g, 0);
+      sellAllSpare(state);
+      for (const d of activeDemands(state)) if (canDeliver(state, d)) deliver(state, d.id);
+      let bought = 0;
+      for (let guard = 0; guard < 20; guard++) {
+        const cheapest = shopStock(state)[0];
+        if (!cheapest || !buy(state, cheapest)) break;
+        bought++;
       }
-
-      if (o.items === 'smart') manageItemsSmart(state);
-      else manageItemsSimple(state);
-
-      // 4. Rebirth once Memories per minute (after the age factor) has clearly peaked and the next boss isn't close.
-      if (canRebirth(state) && state.lifeTime > 60) {
-        const rate = memoryRate(state);
-        const nb = BOSSES[state.bossesBeaten];
-        const p = nb ? predictFight(stats, nb) : null;
-        const close = p ? p.ttk < p.ttd * 1.25 && p.ttk < BALANCE.fightTimeout * 1.25 : false;
-        if (rate < state.life.peakRate * o.rebirthBelowPeak && !close) {
-          rebirth(state);
-          for (let i = 0; i < 50; i++) {
-            const affordable = PERK_ORDER.filter((id) => {
-              const def = PERKS.find((p) => p.id === id)!;
-              return state.perks[id] < def.maxLevel && perkCost(def, state.perks[id]) <= state.memories;
-            });
-            const first = affordable.find((id) => id === 'habit' || id === 'autoMerge') ??
-              affordable.sort((a, b) => perkCost(PERKS.find((p) => p.id === a)!, state.perks[a]) - perkCost(PERKS.find((p) => p.id === b)!, state.perks[b]))[0];
-            if (!first || !buyPerk(state, first)) break;
-          }
-        }
-      }
+      visits.push(bought);
     },
   };
 }
+

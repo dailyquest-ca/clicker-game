@@ -27,14 +27,15 @@ export function Btn(props: { onClick: () => void; disabled?: boolean; children: 
 }
 
 const LABELS: Record<keyof Bonuses, [string, boolean]> = {
-  powerFlat: ['Power', false],
-  guardFlat: ['Guard', false],
-  powerPct: ['Power', true],
-  guardPct: ['Guard', true],
-  goldPct: ['Gold', true],
-  dropPct: ['Drop chance', true],
-  regenPct: ['Stamina regen', true],
-  capPct: ['Stamina cap', true],
+  hayPct: ['hay speed', true],
+  eggPct: ['egg speed', true],
+  logPct: ['firewood speed', true],
+  rummagePct: ['rummaging speed', true],
+  workPct: ['all work', true],
+  pricePct: ['sell prices', true],
+  luckPct: ['luck', false],
+  pips: ['stamina pip', false],
+  barn: ['barn space', false],
 };
 
 export function bonusText(b: Partial<Bonuses>): string {
@@ -47,4 +48,19 @@ export function bonusText(b: Partial<Bonuses>): string {
     parts.push(isPct ? `${sign}${Math.abs(Math.round(v))}% ${label}` : `${sign}${num(Math.abs(v))} ${label}`);
   }
   return parts.join(', ');
+}
+
+/** Pennies, written the old way. */
+export function d(x: number): string {
+  return `${num(x)}d`;
+}
+
+export function Pips(props: { used: number; total: number }) {
+  return (
+    <span class="pips" aria-label={`${props.used} of ${props.total} pips busy`}>
+      {Array.from({ length: props.total }, (_, i) => (
+        <span class={`pip ${i < props.used ? 'on' : ''}`} />
+      ))}
+    </span>
+  );
 }

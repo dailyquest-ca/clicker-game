@@ -1,6 +1,6 @@
 import { render } from 'preact';
 import { BALANCE } from './core/balance';
-import { SAVE_KEY, catchUp, deserialize, serialize } from './core/save';
+import { OLD_SAVE_KEYS, SAVE_KEY, catchUp, deserialize, serialize } from './core/save';
 import { newGame } from './core/state';
 import { advance, step } from './core/step';
 import type { GameState } from './core/types';
@@ -8,12 +8,20 @@ import { App } from './ui/App';
 import { emit, store } from './ui/store';
 import './styles.css';
 
+let notice: string | null = null;
+
 function load(): GameState {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (raw) return deserialize(raw);
   } catch (e) {
     console.warn('Could not load save, starting fresh.', e);
+  }
+  for (const key of OLD_SAVE_KEYS) {
+    if (localStorage.getItem(key) !== null) {
+      localStorage.removeItem(key);
+      notice = 'The game has changed a lot since you last played, so your old save was retired. Welcome to the new village.';
+    }
   }
   return newGame(Date.now() & 0x7fffffff, Date.now());
 }
@@ -30,7 +38,12 @@ function save(): void {
 store.game = load();
 const offline = catchUp(store.game, Date.now());
 
-render(<App offline={offline} />, document.getElementById('app')!);
+render(<App offline={offline} notice={notice} />, document.getElementById('app')!);
+
+/** Time stands still while a story card is open, and after Hob dies (until you pass the pitchfork on). */
+function paused(): boolean {
+  return store.game.dead || store.game.cardQueue.length > 0;
+}
 
 // Fixed 10 Hz simulation. If the tab slept for a while, catch up in coarse steps instead.
 let last = performance.now();
@@ -39,11 +52,13 @@ setInterval(() => {
   const now = performance.now();
   const dt = (now - last) / 1000;
   last = now;
-  if (dt > 5) {
+  if (paused()) {
+    acc = 0;
+  } else if (dt > 5) {
     advance(store.game, Math.min(dt, BALANCE.offlineCapSeconds), 1);
   } else {
     acc += dt;
-    while (acc >= BALANCE.tickSeconds) {
+    while (acc >= BALANCE.tickSeconds && !paused()) {
       step(store.game, BALANCE.tickSeconds);
       acc -= BALANCE.tickSeconds;
     }

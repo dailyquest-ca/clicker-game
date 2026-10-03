@@ -1,24 +1,24 @@
-# Serf — Era 1 prototype
+# Serf: The Goat Debt (Era 1 prototype)
 
-A tiny NGU-style incremental, built to test one thing: does a small loop of **smart choices** feel satisfying?
+A small incremental game about a family of serfs paying off a century-old debt for a borrowed goat, one generation at a time.
 
-The choices are:
+You are Hob. You have three pips of stamina, a field of hay, and your late father's debt. Each life you build up a little farm, then decide:
 
-- how to split your stamina between Power and Guard;
-- which boss to prepare for;
-- which zone to farm;
-- what to wear and merge;
-- when to rebirth.
+- what to buy;
+- what to pay;
+- what to keep for the Steward;
+- what to hand down to your heir.
 
-You are Hob, a serf. A rooster has opinions about you. It goes downhill (uphill?) from there.
+The family gets a little better at everything each generation.
 
 ```bash
 npm install
-npm run dev        # play it in the browser
+npm run dev        # play it in the browser (add ?debug=1 and use __advance(60) to skip time)
 npm test           # unit tests
-npm run sim        # pacing simulator: bots play the real rules and report timings
+npm run sim        # pacing simulator: bots play the real rules and check the pacing targets
 npm run e2e        # browser smoke test with screenshots in artifacts/
 npm run build      # static build in dist/
 ```
 
-Design notes, simulator findings and playtest questions: [docs/prototype-v0.md](docs/prototype-v0.md).
+- **Design, simulator results and playtest questions:** [docs/prototype-v1.md](docs/prototype-v1.md)
+- **The first prototype (NGU-style bosses and adventure) and what we learned from it:** [docs/prototype-v0.md](docs/prototype-v0.md)
